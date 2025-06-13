@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+import warnings
+# Suppress deprecation warnings (for example, from modules like imghdr if used indirectly)
+warnings.simplefilter("ignore", DeprecationWarning)
+
 import logging
 import random
 import time
@@ -7,8 +11,12 @@ import threading
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, CallbackContext
 from flask import Flask
+from dotenv import load_dotenv
 
-# --- Set up a simple Flask app for health checks ---
+# Load environment variables (from a .env file, if present)
+load_dotenv()
+
+# --- Flask app for health checking ---
 app = Flask(__name__)
 
 @app.route("/")
@@ -16,7 +24,7 @@ def health():
     return "Shroom Game is running", 200
 
 def run_http_server():
-    # Koyeb sets the PORT environment variable; default to 8080 if not set.
+    # Render expects the PORT variable; default to 8080 if not defined.
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
@@ -27,57 +35,52 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- Game Settings ---
-BOARD_SIZE = 10               # Board is 10x10
+BOARD_SIZE = 10               # 10x10 board grid
 ROUND_DURATION = 60           # Each round lasts 60 seconds
-MAX_MUSHROOMS = 5             # Maximum number of mushrooms on board
+MAX_MUSHROOMS = 5             # Maximum mushrooms allowed on board
 
-# Global dictionary to store game states per chat
+# Global dictionary to store game states by chat ID.
 game_states = {}
 
 def render_board(state):
     """
-    Render the game board as an ASCII grid using emojis.
-    Player is represented as 🙂, Raven as 🐦, Mushrooms as 🍄, Empty cells as ⬜.
+    Render an ASCII game board using emojis.
+    Player: 🙂, Raven: 🐦, Mushrooms: 🍄, Empty cells: ⬜.
+    Also append game stats and reminder of remaining time.
     """
     board = [['⬜' for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
-    # Place mushrooms
     for (x, y) in state['mushrooms']:
         board[y][x] = '🍄'
-    # Place raven
     rx, ry = state['raven_pos']
     board[ry][rx] = '🐦'
-    # Place player (overwrites anything underneath)
     px, py = state['player_pos']
     board[py][px] = '🙂'
     board_lines = ["".join(row) for row in board]
-    board_text = "\n".join(board_lines)
-    # Add stats and remaining round time
     time_left = max(0, int(state['start_time'] + ROUND_DURATION - time.time()))
     stats = f"Level: {state['level']}  Score: {state['score']}  Collected: {state['collected']}/{state['required']}\nTime Left: {time_left}s"
-    return board_text + "\n" + stats
+    return "\n".join(board_lines) + "\n" + stats
 
 def init_game(chat_id):
     """
-    Initialize a new game state for a given chat.
+    Initialize a new game state for the given chat.
     """
     state = {
         'level': 1,
         'score': 0,
         'collected': 0,
-        'required': 3,  # Level 1: need 3 mushrooms to level up
+        'required': 3,  # Initially, 3 mushrooms are needed to level up.
         'player_pos': (0, 0),
         'raven_pos': (BOARD_SIZE - 1, BOARD_SIZE - 1),
         'mushrooms': [],
         'start_time': time.time()
     }
-    # Spawn 3 initial mushrooms
     for _ in range(3):
         spawn_mushroom(state)
     game_states[chat_id] = state
 
 def spawn_mushroom(state):
     """
-    Add a new mushroom at a random location not already occupied.
+    Spawn a new mushroom at a random free location.
     """
     if len(state['mushrooms']) >= MAX_MUSHROOMS:
         return
@@ -91,7 +94,7 @@ def spawn_mushroom(state):
 
 def move_raven(state):
     """
-    Move the raven one step toward the nearest mushroom or randomly if none exists.
+    Move the raven one step toward the nearest mushroom, or randomly if none exist.
     """
     rx, ry = state['raven_pos']
     if state['mushrooms']:
@@ -114,18 +117,18 @@ def move_raven(state):
 
 def update_game_state(chat_id, move_direction):
     """
-    Process player movement and update the game state accordingly.
+    Update the game state based on the player's move and return the updated board or a game-over message.
     """
     state = game_states.get(chat_id)
     if not state:
         return "Game not started. Use /start to begin."
 
-    # Check if the round time has expired.
+    # Check round timer.
     time_left = state['start_time'] + ROUND_DURATION - time.time()
     if time_left <= 0:
         msg = "Time's up! "
         if state['collected'] >= state['required']:
-            # Level up
+            # Level up.
             state['level'] += 1
             state['required'] += 2
             msg += f"You progressed to level {state['level']}!"
@@ -142,7 +145,7 @@ def update_game_state(chat_id, move_direction):
             return msg
         return msg
 
-    # Update player's position based on input move.
+    # Update player's position.
     px, py = state['player_pos']
     if move_direction == 'up':
         new_pos = (px, max(py - 1, 0))
@@ -156,28 +159,28 @@ def update_game_state(chat_id, move_direction):
         new_pos = (px, py)
     state['player_pos'] = new_pos
 
-    # Check for mushroom collection
+    # Check for collection.
     if new_pos in state['mushrooms']:
         state['mushrooms'].remove(new_pos)
         state['score'] += 10
         state['collected'] += 1
 
-    # Move the raven and check for collision
+    # Move the raven.
     move_raven(state)
     if state['player_pos'] == state['raven_pos']:
         msg = "Oh no! The raven caught you. Game over!"
         del game_states[chat_id]
         return msg
 
-    # Randomly spawn a new mushroom with a 30% chance
+    # Random chance to spawn a new mushroom.
     if random.random() < 0.3:
         spawn_mushroom(state)
-    
+
     return render_board(state)
 
 def get_move_keyboard():
     """
-    Return an inline keyboard for move directions.
+    Return an inline keyboard for directional moves.
     """
     keyboard = [
         [InlineKeyboardButton("Up", callback_data="up")],
@@ -189,7 +192,7 @@ def get_move_keyboard():
 
 def start_game(update: Update, context: CallbackContext):
     """
-    Handler for the /start command: initialize the game and send the initial board.
+    Handler for the /start command: initialize the game and display the board.
     """
     chat_id = update.effective_chat.id
     init_game(chat_id)
@@ -205,7 +208,30 @@ def start_game(update: Update, context: CallbackContext):
 
 def move_handler(update: Update, context: CallbackContext):
     """
-    Handler for move commands via inline keyboard buttons.
+    Process move commands via inline keyboard buttons.
     """
     query = update.callback_query
+    chat_id = query.message.chat_id
+    move_direction = query.data
+    new_state_text = update_game_state(chat_id, move_direction)
+    query.edit_message_text(text=new_state_text, reply_markup=get_move_keyboard())
 
+def main():
+    TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not TOKEN:
+        logger.error("TELEGRAM_BOT_TOKEN environment variable not set.")
+        return
+
+    # Start the Flask server for health checks in a background thread.
+    threading.Thread(target=run_http_server, daemon=True).start()
+
+    # Set up the Telegram bot.
+    updater = Updater(TOKEN, use_context=True)
+    dp = updater.dispatcher
+    dp.add_handler(CommandHandler("start", start_game))
+    dp.add_handler(CallbackQueryHandler(move_handler))
+    updater.start_polling()
+    updater.idle()
+
+if __name__ == "__main__":
+    main()
